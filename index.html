@@ -600,11 +600,26 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
 <script>/* ===================== STORAGE LAYER ===================== */
 const Store = {
   hasRemote: (typeof window.storage !== 'undefined'),
+  // Namespaced prefix so this app's keys never collide with anything else in the
+  // surrounding app/WebView's localStorage.
+  prefix: 'salesDashboard:',
+  hasLocal: (function(){
+    try{
+      const t = '__store_test__';
+      localStorage.setItem(t, '1');
+      localStorage.removeItem(t);
+      return true;
+    }catch(e){ return false; }
+  })(),
   mem: {},
   async get(key, shared=true){
     if(this.hasRemote){
       try{ const r = await window.storage.get(key, shared); return r ? r.value : null; }
       catch(e){ return null; }
+    }
+    if(this.hasLocal){
+      try{ return localStorage.getItem(this.prefix+key); }
+      catch(e){ /* fall through to memory */ }
     }
     return Object.prototype.hasOwnProperty.call(this.mem,key) ? this.mem[key] : null;
   },
@@ -613,12 +628,20 @@ const Store = {
       try{ await window.storage.set(key, value, shared); return true; }
       catch(e){ console.error('storage set failed', e); return false; }
     }
+    if(this.hasLocal){
+      try{ localStorage.setItem(this.prefix+key, value); return true; }
+      catch(e){ console.error('localStorage set failed', e); }
+    }
     this.mem[key] = value; return true;
   },
   async delete(key, shared=true){
     if(this.hasRemote){
       try{ await window.storage.delete(key, shared); return true; }
       catch(e){ return false; }
+    }
+    if(this.hasLocal){
+      try{ localStorage.removeItem(this.prefix+key); return true; }
+      catch(e){ /* ignore */ }
     }
     delete this.mem[key]; return true;
   }
@@ -713,8 +736,15 @@ function parseWorkbookArrayBuffer(buf){
       const invNum = (typeof invRaw === 'number') ? invRaw : 0;
       const pcsNum = (typeof pcsRaw === 'number') ? pcsRaw : 0;
 
+      // Excel date serials can carry a tiny floating-point fraction (e.g. 46123.999999996
+      // instead of 46124). Once converted to a JS Date, that lands a few seconds before
+      // local midnight, so reading the day directly can return the PREVIOUS calendar day
+      // for every row, shifting the whole imported month back by one day. A small forward
+      // buffer absorbs that noise without affecting genuinely different dates.
+      const safeDay = new Date(dateObj.getTime() + 10*60*1000);
+
       days.push({
-        day: dateObj.getDate(),
+        day: safeDay.getDate(),
         sales: salesNum,
         target: targetNum,
         invoices: invNum,
@@ -1407,6 +1437,34 @@ function downloadBlob(blob, fileName){
   setTimeout(()=>URL.revokeObjectURL(url), 2000);
 }
 
+function isCanvasBlank(canvas){
+  try{
+    const ctx = canvas.getContext('2d');
+    if(!ctx) return true;
+    const w = canvas.width, h = canvas.height;
+    if(!w || !h) return true;
+    // Sample a grid of points instead of reading every pixel — cheap and fast, but enough
+    // to catch a fully blank/solid-color capture (the typical foreignObjectRendering failure).
+    const cols = 8, rows = 12;
+    let firstColor = null;
+    for(let r=0; r<rows; r++){
+      for(let c=0; c<cols; c++){
+        const x = Math.min(w-1, Math.floor((c+0.5)*w/cols));
+        const y = Math.min(h-1, Math.floor((r+0.5)*h/rows));
+        const px = ctx.getImageData(x, y, 1, 1).data;
+        const key = px[0]+','+px[1]+','+px[2]+','+px[3];
+        if(firstColor === null) firstColor = key;
+        else if(key !== firstColor) return false;
+      }
+    }
+    return true;
+  }catch(e){
+    // Can't read pixels (tainted canvas) - don't treat that as "blank", let the later
+    // toBlob/share step surface the real error if there is one.
+    return false;
+  }
+}
+
 async function shareScreenshot(){
   if(typeof html2canvas === 'undefined'){
     alert('تعذّر تحميل أداة لقطة الشاشة. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.');
@@ -1436,15 +1494,26 @@ async function shareScreenshot(){
       windowWidth: target.scrollWidth,
       windowHeight: target.scrollHeight
     };
-    let canvas;
+    let canvas = null;
+    let triedForeignObject = false;
     try{
-      // foreignObjectRendering lets the browser draw the page natively (real text shaping,
-      // gradients, shadows) instead of html2canvas re-drawing everything itself, which is
-      // the main reason a regular capture looks softer/pixelated than a native screenshot.
+      // foreignObjectRendering lets the browser draw the page natively (sharper text,
+      // gradients, shadows) instead of html2canvas re-drawing everything itself, but it's
+      // unreliable in some Android WebViews and can silently produce a blank capture
+      // instead of throwing — so its result always gets verified below.
+      triedForeignObject = true;
       canvas = await html2canvas(target, { ...baseOptions, foreignObjectRendering: true });
     }catch(foErr){
-      console.warn('foreignObjectRendering failed, falling back to default renderer', foErr);
+      canvas = null;
+    }
+    if(!canvas || isCanvasBlank(canvas)){
+      if(triedForeignObject) console.warn('foreignObjectRendering produced a blank capture, falling back to default renderer');
       canvas = await html2canvas(target, baseOptions);
+    }
+    if(!canvas || isCanvasBlank(canvas)){
+      alert('تعذّر إنشاء لقطة شاشة صحيحة للصفحة. حاول مرة أخرى.');
+      if(btn) btn.style.visibility = 'visible';
+      return;
     }
     canvas.toBlob(async (blob)=>{
       if(!blob){
