@@ -140,6 +140,29 @@
   }
   .share-btn:active{ background: rgba(255,255,255,.28); }
 
+  .global-toast{
+    position:fixed;
+    bottom:24px;
+    left:50%;
+    transform:translateX(-50%) translateY(20px);
+    background:rgba(27,58,54,.92);
+    color:#fff;
+    padding:10px 18px;
+    border-radius:999px;
+    font-size:13px;
+    font-weight:600;
+    opacity:0;
+    pointer-events:none;
+    transition:opacity .25s, transform .25s;
+    z-index:9999;
+    max-width:90%;
+    text-align:center;
+  }
+  .global-toast.show{
+    opacity:1;
+    transform:translateX(-50%) translateY(0);
+  }
+
   /* ===== TABS ===== */
   .tabbar{
     display:flex;
@@ -802,7 +825,7 @@
         </div>
       </div>
       <div class="topline-actions">
-        <button class="share-btn" id="shareBtn" onclick="shareScreenshot()" title="مشاركة كصورة" aria-label="مشاركة كصورة">📤</button>
+        <button class="share-btn" id="saveScreenshotBtn" onclick="saveScreenshot()" title="حفظ لقطة شاشة للمعرض" aria-label="حفظ لقطة شاشة للمعرض">💾</button>
         <div class="date-pill" id="todayPill">—</div>
       </div>
     </div>
@@ -1348,6 +1371,26 @@ function computeMetrics(branchData){
     if(!worst || d.sales < worst.sales) worst = d;
   });
 
+  // ---- Month-end projection: pace through yesterday, projected across the full month ----
+  const dailyPaceSoFar = compareDay > 0 ? (monthlyActual / compareDay) : 0;
+  const projectedMonthTotal = dailyPaceSoFar * daysInMonth;
+  const projectedVsTargetPct = monthlyTarget > 0 ? (projectedMonthTotal / monthlyTarget * 100) : 0;
+  const remainingDaysInMonth = Math.max(daysInMonth - compareDay, 0);
+  const remainingTargetAmount = Math.max(monthlyTarget - monthlyActual, 0);
+  const neededDailyPace = remainingDaysInMonth > 0 ? (remainingTargetAmount / remainingDaysInMonth) : 0;
+
+  // ---- Weekday performance: average sales per weekday across entered days this month ----
+  const weekdaySums = [0,0,0,0,0,0,0];
+  const weekdayCounts = [0,0,0,0,0,0,0];
+  monthData.days.forEach(d=>{
+    if(d.sales !== null && d.sales !== undefined){
+      const wd = new Date(today.getFullYear(), monthIdx, d.day).getDay();
+      weekdaySums[wd] += d.sales;
+      weekdayCounts[wd] += 1;
+    }
+  });
+  const weekdayAverages = weekdaySums.map((sum,i)=> weekdayCounts[i] > 0 ? (sum/weekdayCounts[i]) : 0);
+
   return {
     hasAnyCY, hasAnyPY,
     monthIdx, monthName: MONTH_LABELS[monthIdx], todayDay, compareDay, daysInMonth, lastDataDay,
@@ -1355,7 +1398,10 @@ function computeMetrics(branchData){
     prevYearSamePeriod, monthlyGrowth, ytdCurrent, ytdPrev, yearlyGrowth,
     fullPrevYear, annualTargetCurrent, annualAchievementPct,
     invoicesCount, avgInvoice, avgPieces, best, worst,
+    dailyPaceSoFar, projectedMonthTotal, projectedVsTargetPct, remainingDaysInMonth, neededDailyPace,
+    weekdayAverages, weekdayCounts,
     monthlyActualSeries: cy.map(m=>m?m.actual:0),
+    monthlyTargetSeries: cy.map(m=>m?m.target:0),
     prevYearMonthlySeries: py.map(m=>m?m.actual:0),
     dailySeries: monthData.days.map(d=>({day:d.day, sales:d.sales, target:d.target}))
   };
@@ -1376,7 +1422,7 @@ let STATE = {
   branches: [],           // [{name}]
   branchData: {},         // name -> {previousYear:[12], currentYear:[12]}
   selectedBranch: null,
-  charts: { monthly:null, daily:null }
+  charts: { monthly:null, monthlyTarget:null, daily:null, weekday:null }
 };
 
 /* ===================== INIT ===================== */
@@ -1791,7 +1837,7 @@ function buildDashboardHTML(m){
         </svg>
         <div class="ring-center"><div class="pct" id="companyPctLabel">0<span>%</span></div></div>
       </div>
-      <div class="gauge-title">نسبة الشركة</div>
+      <div class="gauge-title">التحقيق التراكمي</div>
       <div class="gauge-sub">تحقيق الهدف المرحلي من بداية الشهر حتى الأمس</div>
     </div>
   </div>
@@ -1836,13 +1882,46 @@ function buildDashboardHTML(m){
     </section>
 
     <section>
+      <div class="section-title"><span class="dot"></span>مقارنة الأشهر بالأهداف</div>
+      <div class="chart-card">
+        <div class="chart-legend">
+          <span class="leg"><span class="sw" style="background:#0F5C4F"></span>المبيعات الفعلية</span>
+          <span class="leg"><span class="sw" style="background:#7FC4AE"></span>الهدف الشهري</span>
+        </div>
+        <div class="chart-wrap"><canvas id="monthlyTargetChart"></canvas></div>
+      </div>
+    </section>
+
+    <section>
       <div class="section-title"><span class="dot"></span>مبيعات ${m.monthName} اليومية</div>
       <div class="chart-card">
         <div class="chart-legend">
           <span class="leg"><span class="sw" style="background:#E0A22E"></span>المبيعات الفعلية</span>
-          <span class="leg"><span class="sw" style="background:#7FC4AE;border-radius:50%;width:8px;height:8px;"></span>الهدف اليومي</span>
+          <span class="leg"><span class="sw" style="background:#7FC4AE"></span>الهدف اليومي</span>
         </div>
         <div class="chart-wrap tall"><canvas id="dailyChart"></canvas></div>
+      </div>
+    </section>
+
+    <section class="year-card">
+      <div class="yt"><span class="dot"></span>توقع نهاية الشهر</div>
+      ${m.compareDay > 0 ? `
+      <div class="year-row">
+        <div class="year-stat"><div class="l">المعدل اليومي الحالي</div><div class="v">${fmt(m.dailyPaceSoFar)}</div></div>
+        <div class="year-stat right"><div class="l">الهدف الشهري</div><div class="v">${fmt(m.monthlyTarget)}</div></div>
+      </div>
+      <div class="progress-track"><div class="progress-fill" id="projectionProgressFill"></div></div>
+      <div class="progress-caption"><span>${m.projectedVsTargetPct>=100?'📈':'📉'} المتوقع نهاية الشهر: <b>${fmt1(m.projectedVsTargetPct)}%</b></span><span>${fmt(m.projectedMonthTotal)} ريال</span></div>
+      <div class="section-note">${m.projectedVsTargetPct>=100
+        ? 'بهذا المعدل سيتجاوز الهدف الشهري 🎉'
+        : (m.remainingDaysInMonth>0 ? `يلزم رفع المعدل اليومي إلى <b>${fmt(m.neededDailyPace)}</b> ريال للأيام ${m.remainingDaysInMonth} المتبقية لتحقيق الهدف` : 'انتهى الشهر')}</div>
+      ` : `<div class="section-note">بانتظار بيانات الأيام الأولى من الشهر لحساب التوقع</div>`}
+    </section>
+
+    <section>
+      <div class="section-title"><span class="dot"></span>أداء أيام الأسبوع (متوسط المبيعات)</div>
+      <div class="chart-card">
+        <div class="chart-wrap"><canvas id="weekdayChart"></canvas></div>
       </div>
     </section>
 
@@ -1865,11 +1944,16 @@ function setupGaugesAndCharts(m){
   const fillEl = document.getElementById('annualProgressFill');
   if(fillEl) setTimeout(()=>{ fillEl.style.width = Math.min(m.annualAchievementPct,100)+'%'; }, 200);
 
+  const projFillEl = document.getElementById('projectionProgressFill');
+  if(projFillEl) setTimeout(()=>{ projFillEl.style.width = Math.min(m.projectedVsTargetPct,100)+'%'; }, 200);
+
   Chart.defaults.font.family = "'Tajawal', sans-serif";
   Chart.defaults.color = '#4B6963';
 
   if(STATE.charts.monthly){ STATE.charts.monthly.destroy(); STATE.charts.monthly=null; }
+  if(STATE.charts.monthlyTarget){ STATE.charts.monthlyTarget.destroy(); STATE.charts.monthlyTarget=null; }
   if(STATE.charts.daily){ STATE.charts.daily.destroy(); STATE.charts.daily=null; }
+  if(STATE.charts.weekday){ STATE.charts.weekday.destroy(); STATE.charts.weekday=null; }
 
   const monthlyCanvas = document.getElementById('monthlyChart');
   if(monthlyCanvas){
@@ -1890,6 +1974,26 @@ function setupGaugesAndCharts(m){
     });
   }
 
+  const monthlyTargetCanvas = document.getElementById('monthlyTargetChart');
+  if(monthlyTargetCanvas){
+    // Same bar (actual) + dashed target-line pattern as the daily chart below, for a
+    // consistent, interactive look across both "vs target" cards.
+    STATE.charts.monthlyTarget = new Chart(monthlyTargetCanvas, {
+      data:{
+        labels: MONTH_LABELS,
+        datasets:[
+          {type:'bar', label:'المبيعات الفعلية', data:m.monthlyActualSeries, backgroundColor: ctx => (ctx.dataIndex===m.monthIdx) ? '#E8604C' : '#0F5C4F', borderRadius:6, maxBarThickness:14},
+          {type:'bar', label:'الهدف الشهري', data:m.monthlyTargetSeries, backgroundColor:'#7FC4AE', borderRadius:6, maxBarThickness:14}
+        ]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ rtl:true, callbacks:{ label: ctx => ' '+ctx.dataset.label+': '+(ctx.raw?Math.round(ctx.raw).toLocaleString('en-US'):'0')+' ريال' } } },
+        scales:{ x:{grid:{display:false}, ticks:{font:{size:10}}}, y:{grid:{color:'#EFEBDD'}, ticks:{ callback: v => (v/1000)+'k' }} }
+      }
+    });
+  }
+
   const dailyCanvas = document.getElementById('dailyChart');
   if(dailyCanvas){
     const labels = m.dailySeries.map(d=>d.day);
@@ -1898,13 +2002,30 @@ function setupGaugesAndCharts(m){
         labels,
         datasets:[
           {type:'bar', label:'المبيعات الفعلية', data:m.dailySeries.map(d=>d.sales), backgroundColor: ctx=> (m.dailySeries[ctx.dataIndex] && m.dailySeries[ctx.dataIndex].day===m.todayDay) ? '#E8604C' : '#E0A22E', borderRadius:5, maxBarThickness:11},
-          {type:'line', label:'الهدف اليومي', data:m.dailySeries.map(d=>d.target), borderColor:'#7FC4AE', borderWidth:2, pointRadius:0, tension:.35, borderDash:[5,4]}
+          {type:'bar', label:'الهدف اليومي', data:m.dailySeries.map(d=>d.target), backgroundColor:'#7FC4AE', borderRadius:5, maxBarThickness:11}
         ]
       },
       options:{
         responsive:true, maintainAspectRatio:false,
         plugins:{ legend:{display:false}, tooltip:{ rtl:true, callbacks:{ label: ctx => ' '+ctx.dataset.label+': '+(ctx.raw?Math.round(ctx.raw).toLocaleString('en-US'):'0')+' ريال' } } },
         scales:{ x:{grid:{display:false}, ticks:{maxRotation:0, autoSkip:true, maxTicksLimit:10}}, y:{grid:{color:'#EFEBDD'}, ticks:{ callback: v => (v/1000)+'k' }} }
+      }
+    });
+  }
+  const weekdayCanvas = document.getElementById('weekdayChart');
+  if(weekdayCanvas){
+    let bestIdx = -1, bestVal = -1;
+    m.weekdayAverages.forEach((v,i)=>{ if(m.weekdayCounts[i]>0 && v>bestVal){ bestVal=v; bestIdx=i; } });
+    STATE.charts.weekday = new Chart(weekdayCanvas, {
+      type:'bar',
+      data:{
+        labels: WEEKDAYS_AR,
+        datasets:[{ label:'متوسط المبيعات', data:m.weekdayAverages, backgroundColor: ctx => ctx.dataIndex===bestIdx ? '#0F5C4F' : '#E0A22E', borderRadius:6, maxBarThickness:26 }]
+      },
+      options:{
+        responsive:true, maintainAspectRatio:false,
+        plugins:{ legend:{display:false}, tooltip:{ rtl:true, callbacks:{ label: ctx => ' متوسط المبيعات: '+(ctx.raw?Math.round(ctx.raw).toLocaleString('en-US'):'0')+' ريال' } } },
+        scales:{ x:{grid:{display:false}, ticks:{font:{size:10.5}}}, y:{grid:{color:'#EFEBDD'}, ticks:{ callback: v => (v/1000)+'k' }} }
       }
     });
   }
@@ -1964,12 +2085,26 @@ function isCanvasBlank(canvas){
   }
 }
 
-async function shareScreenshot(){
+function showGlobalToast(msg){
+  let t = document.getElementById('globalToast');
+  if(!t){
+    t = document.createElement('div');
+    t.id = 'globalToast';
+    t.className = 'global-toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(showGlobalToast._t);
+  showGlobalToast._t = setTimeout(()=>t.classList.remove('show'), 1800);
+}
+
+async function saveScreenshot(){
   if(typeof html2canvas === 'undefined'){
     alert('تعذّر تحميل أداة لقطة الشاشة. تأكد من الاتصال بالإنترنت وحاول مرة أخرى.');
     return;
   }
-  const btn = document.getElementById('shareBtn');
+  const btn = document.getElementById('saveScreenshotBtn');
   const target = document.querySelector('.app');
   if(!target) return;
   if(btn){ btn.style.visibility = 'hidden'; }
@@ -2014,7 +2149,7 @@ async function shareScreenshot(){
       if(btn) btn.style.visibility = 'visible';
       return;
     }
-    canvas.toBlob(async (blob)=>{
+    canvas.toBlob((blob)=>{
       if(!blob){
         alert('حدث خطأ أثناء إنشاء لقطة الشاشة.');
         if(btn) btn.style.visibility = 'visible';
@@ -2022,21 +2157,12 @@ async function shareScreenshot(){
       }
       const branchName = (document.getElementById('headerBranchName') || {}).textContent || 'لوحة-المبيعات';
       const fileName = `مبيعات-${branchName}-${new Date().toISOString().slice(0,10)}.png`.replace(/\s+/g,'-');
-      const file = new File([blob], fileName, { type: 'image/png' });
-      try{
-        if(navigator.canShare && navigator.canShare({ files: [file] })){
-          await navigator.share({ files: [file], title: 'لوحة مبيعات المعارض', text: 'لقطة من لوحة المبيعات' });
-        } else {
-          downloadBlob(blob, fileName);
-        }
-      }catch(shareErr){
-        if(shareErr && shareErr.name !== 'AbortError'){ downloadBlob(blob, fileName); }
-      }finally{
-        if(btn) btn.style.visibility = 'visible';
-      }
+      downloadBlob(blob, fileName);
+      showGlobalToast('تم حفظ لقطة الشاشة ✅');
+      if(btn) btn.style.visibility = 'visible';
     }, 'image/png');
   }catch(err){
-    console.error('shareScreenshot failed', err);
+    console.error('saveScreenshot failed', err);
     alert('حدث خطأ أثناء إنشاء لقطة الشاشة. حاول مرة أخرى.');
     if(btn) btn.style.visibility = 'visible';
   }
