@@ -310,6 +310,12 @@
   .progress-fill{ height:100%; border-radius:999px; background: linear-gradient(90deg, var(--gold-500), var(--gold-300)); width:0%; transition: width 1.2s cubic-bezier(.4,0,.2,1); }
   .progress-caption{ margin-top:8px; font-size:11px; opacity:.85; display:flex; justify-content:space-between; }
 
+  .remain-row{ display:flex; justify-content:space-between; align-items:center; gap:10px; padding:10px 0; border-bottom:1px solid #F0ECDD; }
+  .remain-row:last-child{ border-bottom:none; }
+  .remain-label{ font-size:12.5px; color:var(--ink-soft); font-weight:500; line-height:1.5; }
+  .remain-value{ font-family:'Changa', sans-serif; font-weight:700; font-size:13.5px; color:var(--teal-700); white-space:nowrap; flex-shrink:0; }
+  .year-card .section-note{ color: rgba(255,255,255,.85); }
+
   /* ===== EMPTY STATE ===== */
   .empty-state{
     background: var(--paper);
@@ -1391,6 +1397,21 @@ function computeMetrics(branchData){
   });
   const weekdayAverages = weekdaySums.map((sum,i)=> weekdayCounts[i] > 0 ? (sum/weekdayCounts[i]) : 0);
 
+  // ---- Daily remaining needed to: hit the monthly target / beat last year's full month / beat last year's full year ----
+  const fullPrevYearMonth = pyMonth.actual;
+  const remainingForMonthlyGrowth = Math.max(fullPrevYearMonth - monthlyActual, 0);
+  const neededDailyPaceForMonthlyGrowth = remainingDaysInMonth > 0 ? (remainingForMonthlyGrowth / remainingDaysInMonth) : 0;
+  const monthlyGrowthAlreadyAchieved = fullPrevYearMonth > 0 && monthlyActual >= fullPrevYearMonth;
+
+  const yesterdayDate = new Date(today.getFullYear(), monthIdx, compareDay);
+  const yearStart = new Date(today.getFullYear(), 0, 1);
+  const daysElapsedInYear = Math.round((yesterdayDate - yearStart) / 86400000) + 1;
+  const daysInYearTotal = Math.round((new Date(today.getFullYear(), 11, 31) - yearStart) / 86400000) + 1;
+  const remainingDaysInYear = Math.max(daysInYearTotal - daysElapsedInYear, 0);
+  const remainingForYearlyGrowth = Math.max(fullPrevYear - ytdCurrent, 0);
+  const neededDailyPaceForYearlyGrowth = remainingDaysInYear > 0 ? (remainingForYearlyGrowth / remainingDaysInYear) : 0;
+  const yearlyGrowthAlreadyAchieved = fullPrevYear > 0 && ytdCurrent >= fullPrevYear;
+
   return {
     hasAnyCY, hasAnyPY,
     monthIdx, monthName: MONTH_LABELS[monthIdx], todayDay, compareDay, daysInMonth, lastDataDay,
@@ -1400,6 +1421,8 @@ function computeMetrics(branchData){
     invoicesCount, avgInvoice, avgPieces, best, worst,
     dailyPaceSoFar, projectedMonthTotal, projectedVsTargetPct, remainingDaysInMonth, neededDailyPace,
     weekdayAverages, weekdayCounts,
+    neededDailyPaceForMonthlyGrowth, monthlyGrowthAlreadyAchieved,
+    remainingDaysInYear, neededDailyPaceForYearlyGrowth, yearlyGrowthAlreadyAchieved,
     monthlyActualSeries: cy.map(m=>m?m.actual:0),
     monthlyTargetSeries: cy.map(m=>m?m.target:0),
     prevYearMonthlySeries: py.map(m=>m?m.actual:0),
@@ -1922,6 +1945,24 @@ function buildDashboardHTML(m){
       <div class="section-title"><span class="dot"></span>أداء أيام الأسبوع (متوسط المبيعات)</div>
       <div class="chart-card">
         <div class="chart-wrap"><canvas id="weekdayChart"></canvas></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-title"><span class="dot"></span>المتبقي يوميًا لتحقيق الأهداف</div>
+      <div class="chart-card">
+        <div class="remain-row">
+          <div class="remain-label">الهدف الشهري</div>
+          <div class="remain-value">${m.remainingDaysInMonth<=0 ? '—' : (m.neededDailyPace<=0 ? '✅ تم تحقيقه' : fmt(m.neededDailyPace)+' ريال/يوم')}</div>
+        </div>
+        <div class="remain-row">
+          <div class="remain-label">نمو الشهر (مقابل نفس الشهر العام الماضي)</div>
+          <div class="remain-value">${m.monthlyGrowthAlreadyAchieved ? '✅ تم تحقيقه' : (m.remainingDaysInMonth<=0 ? '—' : fmt(m.neededDailyPaceForMonthlyGrowth)+' ريال/يوم')}</div>
+        </div>
+        <div class="remain-row">
+          <div class="remain-label">نمو السنة (مقابل العام الماضي)</div>
+          <div class="remain-value">${m.yearlyGrowthAlreadyAchieved ? '✅ تم تحقيقه' : (m.remainingDaysInYear<=0 ? '—' : fmt(m.neededDailyPaceForYearlyGrowth)+' ريال/يوم')}</div>
+        </div>
       </div>
     </section>
 
