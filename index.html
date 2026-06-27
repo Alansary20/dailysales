@@ -831,7 +831,6 @@
         </div>
       </div>
       <div class="topline-actions">
-        <button class="share-btn" id="saveScreenshotBtn" onclick="saveScreenshot()" title="حفظ لقطة شاشة للمعرض" aria-label="حفظ لقطة شاشة للمعرض">💾</button>
         <div class="date-pill" id="todayPill">—</div>
       </div>
     </div>
@@ -1120,10 +1119,14 @@ break;case"<bookViews":;case"<bookViews>":;case"</bookViews>":break;case"<workbo
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <script>/* ===================== STORAGE LAYER ===================== */
 const Store = {
-  hasRemote: (typeof window.storage !== 'undefined'),
-  // Namespaced prefix so this app's keys never collide with anything else in the
-  // surrounding app/WebView's localStorage.
+  // Namespaced prefix kept only for the localStorage fallback, so this app's keys
+  // never collide with anything else in the surrounding app/WebView's localStorage.
   prefix: 'salesDashboard:',
+  // Unique DB name per page path, same pattern as the inventory-system app.
+  DB_NAME: 'SalesDashboardDB_' + ((location.href || location.pathname || '').replace(/[^a-zA-Z0-9]/g, '_').slice(-40) || 'default'),
+  DB_VERSION: 1,
+  db: null,
+  _dbPromise: null,
   hasLocal: (function(){
     try{
       const t = '__store_test__';
@@ -1133,10 +1136,36 @@ const Store = {
     }catch(e){ return false; }
   })(),
   mem: {},
+  // Lazily opens (and upgrades) the IndexedDB database. Resolves to null if
+  // IndexedDB is unavailable so callers can fall back to localStorage/memory.
+  _openDB(){
+    if(this.db) return Promise.resolve(this.db);
+    if(this._dbPromise) return this._dbPromise;
+    if(typeof indexedDB === 'undefined') return Promise.resolve(null);
+    this._dbPromise = new Promise((resolve)=>{
+      try{
+        const req = indexedDB.open(this.DB_NAME, this.DB_VERSION);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if(!db.objectStoreNames.contains('settings')) db.createObjectStore('settings', { keyPath: 'k' });
+        };
+        req.onsuccess = (e) => { this.db = e.target.result; resolve(this.db); };
+        req.onerror = () => resolve(null);
+      }catch(e){ resolve(null); }
+    });
+    return this._dbPromise;
+  },
   async get(key, shared=true){
-    if(this.hasRemote){
-      try{ const r = await window.storage.get(key, shared); return r ? r.value : null; }
-      catch(e){ return null; }
+    const db = await this._openDB();
+    if(db){
+      try{
+        return await new Promise((resolve)=>{
+          const tx = db.transaction('settings', 'readonly');
+          const req = tx.objectStore('settings').get(key);
+          req.onsuccess = () => resolve(req.result ? req.result.v : null);
+          req.onerror = () => resolve(null);
+        });
+      }catch(e){ /* fall through */ }
     }
     if(this.hasLocal){
       try{ return localStorage.getItem(this.prefix+key); }
@@ -1145,9 +1174,16 @@ const Store = {
     return Object.prototype.hasOwnProperty.call(this.mem,key) ? this.mem[key] : null;
   },
   async set(key, value, shared=true){
-    if(this.hasRemote){
-      try{ await window.storage.set(key, value, shared); return true; }
-      catch(e){ console.error('storage set failed', e); return false; }
+    const db = await this._openDB();
+    if(db){
+      try{
+        return await new Promise((resolve)=>{
+          const tx = db.transaction('settings', 'readwrite');
+          tx.objectStore('settings').put({ k: key, v: value });
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => resolve(false);
+        });
+      }catch(e){ console.error('IndexedDB set failed', e); }
     }
     if(this.hasLocal){
       try{ localStorage.setItem(this.prefix+key, value); return true; }
@@ -1156,9 +1192,16 @@ const Store = {
     this.mem[key] = value; return true;
   },
   async delete(key, shared=true){
-    if(this.hasRemote){
-      try{ await window.storage.delete(key, shared); return true; }
-      catch(e){ return false; }
+    const db = await this._openDB();
+    if(db){
+      try{
+        return await new Promise((resolve)=>{
+          const tx = db.transaction('settings', 'readwrite');
+          tx.objectStore('settings').delete(key);
+          tx.oncomplete = () => resolve(true);
+          tx.onerror = () => resolve(false);
+        });
+      }catch(e){ /* fall through */ }
     }
     if(this.hasLocal){
       try{ localStorage.removeItem(this.prefix+key); return true; }
@@ -1704,7 +1747,7 @@ async function handleFileUpload(e, yearKey, zoneId, titleId, subId){
   const file = e.target.files[0];
   if(!file) return;
   const branch = window.__manageBranch;
-  if(!branch){ alert('اختر معرضًا أولًا'); return; }
+  if(!branch){ alert('اختر معرضًا أولًا'); e.target.value = ''; return; }
   const statusEl = document.getElementById('uploadStatus');
   statusEl.innerHTML = `<div class="status-msg info">⏳ جاري قراءة ${escapeHtml(file.name)}...</div>`;
   try{
@@ -1714,6 +1757,7 @@ async function handleFileUpload(e, yearKey, zoneId, titleId, subId){
     if(monthsWithData === 0){
       statusEl.innerHTML = `<div class="status-msg err">⚠️ لم أجد بيانات يومية مطابقة لتنسيق الملف المتوقع (أوراق بأسماء الأشهر تحتوي عمود "التاريخ"). تأكد من أن الملف هو نفس نموذج دليل البائع.</div>`;
       resetUploadZone(zoneId,titleId,subId,'اضغط لاختيار ملف Excel','.xlsx أو .xls');
+      e.target.value = '';
       return;
     }
     STATE.branchData[branch][yearKey] = months;
@@ -1723,10 +1767,15 @@ async function handleFileUpload(e, yearKey, zoneId, titleId, subId){
     renderAdminBranchList();
     renderMonthDaysTable(branch);
     if(STATE.selectedBranch === branch) renderDashboardTab();
+    // Reset the file input so selecting the SAME file again still fires a
+    // 'change' event next time (otherwise the browser treats it as unchanged
+    // and the second upload silently never triggers handleFileUpload again).
+    e.target.value = '';
   }catch(err){
     console.error(err);
     statusEl.innerHTML = `<div class="status-msg err">❌ تعذّرت قراءة الملف. تأكد من أنه ملف Excel صالح (.xlsx).</div>`;
     resetUploadZone(zoneId,titleId,subId,'اضغط لاختيار ملف Excel','.xlsx أو .xls');
+    e.target.value = '';
   }
 }
 
