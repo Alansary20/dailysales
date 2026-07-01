@@ -461,12 +461,24 @@
   .day-row .day-inputs input:focus{ outline:2px solid var(--teal-300); border-color:var(--teal-500); }
   .day-row .day-target{
     flex-shrink:0;
-    width:54px;
+    width:62px;
     font-size:9.5px;
     color:var(--ink-soft);
     text-align:center;
     line-height:1.4;
   }
+  .day-row .day-target input{
+    width:100%;
+    padding:7px 4px;
+    border-radius:9px;
+    border:1px solid #E3DFD0;
+    font-family:'Tajawal',sans-serif;
+    font-size:12px;
+    background:#fff;
+    color:var(--ink);
+    text-align:center;
+  }
+  .day-row .day-target input:focus{ outline:2px solid var(--teal-300); border-color:var(--teal-500); }
   .month-days-head{
     display:flex; align-items:center; gap:8px;
     padding:8px 10px;
@@ -475,7 +487,7 @@
   }
   .month-days-head .day-tag{ width:46px; flex-shrink:0; text-align:center; }
   .month-days-head .day-inputs{ flex:1; display:grid; grid-template-columns: 1.3fr 0.85fr 0.85fr; gap:6px; text-align:center; }
-  .month-days-head .day-target{ width:54px; flex-shrink:0; text-align:center; }
+  .month-days-head .day-target{ width:62px; flex-shrink:0; text-align:center; }
 
   .hide{ display:none !important; }
 </style>
@@ -1652,7 +1664,7 @@ function renderMonthDaysTable(branch){
     const salesVal = entry && entry.sales!==null && entry.sales!==undefined ? Math.round(entry.sales*100)/100 : '';
     const invVal = entry && entry.invoices ? entry.invoices : '';
     const pcsVal = entry && entry.pieces ? entry.pieces : '';
-    const targetVal = entry && entry.target ? fmt(entry.target) : '—';
+    const targetVal = entry && entry.target ? Math.round(entry.target*100)/100 : '';
     rows += `<div class="day-row ${isToday?'is-today':''}">
       <div class="day-tag"><div class="dnum">${day}</div><div class="dwd">${WEEKDAYS_AR[dateObj.getDay()]}</div></div>
       <div class="day-inputs">
@@ -1660,7 +1672,7 @@ function renderMonthDaysTable(branch){
         <input type="number" step="1" min="0" placeholder="0" data-day="${day}" data-field="invoices" value="${invVal}">
         <input type="number" step="1" min="0" placeholder="0" data-day="${day}" data-field="pieces" value="${pcsVal}">
       </div>
-      <div class="day-target">${targetVal}</div>
+      <div class="day-target"><input type="number" step="0.01" min="0" placeholder="—" data-day="${day}" data-field="target" value="${targetVal}"></div>
     </div>`;
   }
   listEl.innerHTML = head + rows;
@@ -1696,11 +1708,12 @@ async function saveMonthDaysTable(){
     const salesNum = (c.sales !== '' && c.sales !== undefined) ? Number(c.sales) : null;
     const invNum = (c.invoices !== '' && c.invoices !== undefined) ? Number(c.invoices) : 0;
     const pcsNum = (c.pieces !== '' && c.pieces !== undefined) ? Number(c.pieces) : 0;
-    if(salesNum === null && invNum === 0 && pcsNum === 0 && !prev) return; // nothing to store for an untouched empty day
+    const targetNum = (c.target !== '' && c.target !== undefined) ? Number(c.target) : (prev ? (prev.target || 0) : 0);
+    if(salesNum === null && invNum === 0 && pcsNum === 0 && !targetNum && !prev) return; // nothing to store for an untouched empty day
     newDays.push({
       day,
       sales: salesNum,
-      target: prev ? (prev.target || 0) : 0,
+      target: targetNum,
       invoices: invNum,
       pieces: pcsNum,
       manual: prev ? prev.manual : true
